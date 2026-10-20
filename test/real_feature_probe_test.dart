@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zemote/protocol/connection_params.dart';
+import 'package:zemote/protocol/relay_http.dart';
 import 'package:zemote/protocol/zemote_client.dart';
 
 // ignore_for_file: avoid_print
@@ -19,8 +20,14 @@ void main() {
       print('SKIP: probe URL not set.');
       return;
     }
-
-    final client = ZemoteClient(params);
+    final jwt = Platform.environment['ZEMOTE_PROBE_JWT'] ?? _readJwtFile();
+    if (jwt.isEmpty) {
+      print('SKIP: ZEMOTE_PROBE_JWT not set (Relay V2 requires account JWT).');
+      return;
+    }
+    final relayHttp = RelayHttpClient();
+    final client = ZemoteClient(params,
+        getToken: () => relayHttp.fetchToken(jwt, role: 'terminal'));
     await client.connect();
     await client.waitPaired(timeout: const Duration(seconds: 60));
     final bootstrap = await client.bootstrap();
@@ -117,8 +124,20 @@ void main() {
 }
 
 String _readUrl() {
+  final env = Platform.environment['ZEMOTE_PROBE_URL']?.trim() ?? '';
+  if (env.isNotEmpty) return env;
   try {
     return File(r'C:\Users\zuimao\AppData\Local\Temp\opencode\probe_url.txt')
+        .readAsStringSync()
+        .trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+String _readJwtFile() {
+  try {
+    return File(r'C:\Users\zuimao\AppData\Local\Temp\opencode\probe_jwt.txt')
         .readAsStringSync()
         .trim();
   } catch (_) {

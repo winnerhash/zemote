@@ -473,7 +473,7 @@ class _DeviceSwitcherBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final host = account.params?.source.host ?? '';
+    final host = account.params.source.host;
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerHighest,
       child: InkWell(

@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'auth/oauth.dart';
 import 'protocol/relay_client.dart';
+import 'protocol/relay_http.dart';
 import 'state/account_store.dart';
 import 'state/app_session.dart';
 import 'state/log_store.dart';
 import 'state/crash_report_service.dart';
+import 'state/session_store.dart';
 import 'ui/accounts_page.dart';
 import 'ui/theme.dart';
 import 'ui/ui_settings.dart';
@@ -47,7 +50,11 @@ class ZemoteApp extends StatefulWidget {
 
 class _ZemoteAppState extends State<ZemoteApp> {
   final AccountStore _store = AccountStore();
-  final AppSession _session = AppSession();
+  final SessionStore _sessions = SessionStore();
+  final RelayHttpClient _relayHttp = RelayHttpClient();
+  final OAuthClient _oauthClient = OAuthClient();
+  late final AppSession _session =
+      AppSession(sessions: _sessions, relayHttp: _relayHttp);
   final ThemeController _theme = ThemeController();
   final UiSettings _uiSettings = UiSettings();
 
@@ -57,6 +64,8 @@ class _ZemoteAppState extends State<ZemoteApp> {
     notificationsService.init();
     _theme.load();
     _uiSettings.load();
+    _sessions.load();
+    _store.load();
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdates());
   }
 
@@ -91,7 +100,13 @@ class _ZemoteAppState extends State<ZemoteApp> {
             theme: buildLightTheme(),
             darkTheme: buildDarkTheme(),
             themeMode: _theme.mode,
-            home: AccountsPage(store: _store, session: _session),
+            home: AccountsPage(
+              store: _store,
+              sessions: _sessions,
+              session: _session,
+              relayHttp: _relayHttp,
+              oauthClient: _oauthClient,
+            ),
             builder: (context, child) => MediaQuery(
               data: MediaQuery.of(context).copyWith(
                 textScaler: TextScaler.linear(_uiSettings.textScale),

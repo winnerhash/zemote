@@ -2,14 +2,15 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zemote/protocol/connection_params.dart';
+import 'package:zemote/protocol/relay_http.dart';
 import 'package:zemote/protocol/zemote_client.dart';
 
 /// Full feature suite against the real desktop. Every check logs
 /// [PASS]/[FAIL]; non-critical protocol rejections are recorded as [INFO].
 ///
-/// Requires a real ZCode remote-control URL via the `ZEMOTE_PROBE_URL`
-/// environment variable (e.g. `ZEMOTE_PROBE_URL=https://zcode.z.ai/remote/v4?sid=...`
-/// `flutter test integration_test`). Without it the suite is skipped.
+/// Requires a real V2 connection: `--dart-define=ZEMOTE_PROBE_URL=https://zcode.z.ai/remote/v4?sid=...`
+/// plus `--dart-define=ZEMOTE_PROBE_JWT=<account JWT>` (Relay V2). Without
+/// them the suite is skipped.
 void main() {
   test('full feature suite', () async {
     final probeUrl = String.fromEnvironment('ZEMOTE_PROBE_URL',
@@ -21,6 +22,13 @@ void main() {
       // ignore: avoid_print
       print('SKIP: ZEMOTE_PROBE_URL not set or invalid — integration '
           'suite requires a live desktop + real device URL.');
+      return;
+    }
+    final jwt = const String.fromEnvironment('ZEMOTE_PROBE_JWT',
+        defaultValue: '');
+    if (jwt.isEmpty) {
+      // ignore: avoid_print
+      print('SKIP: ZEMOTE_PROBE_JWT not set (Relay V2 account JWT).');
       return;
     }
     final results = <String>[];
@@ -50,7 +58,9 @@ void main() {
             res['status'] == 'noop' ||
             res['status'] == 'duplicate');
 
-    final client = ZemoteClient(params, onLog: log);
+    final relayHttp = RelayHttpClient();
+    final client = ZemoteClient(params,
+        onLog: log, getToken: () => relayHttp.fetchToken(jwt, role: 'terminal'));
 
     // 1. relay connect + pair
     await client.connect();

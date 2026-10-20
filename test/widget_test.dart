@@ -3,7 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zemote/protocol/connection_params.dart';
 import 'package:zemote/protocol/crc32.dart';
 import 'package:zemote/protocol/ipc_codec.dart';
-import 'package:zemote/protocol/proof.dart';
 import 'package:zemote/protocol/conversation.dart';
 
 void main() {
@@ -11,43 +10,44 @@ void main() {
     expect(conversationProtocolAppVersion, '3.6.5');
   });
 
-  test('parse zemote connection url', () {
+  test('parse zemote v2 connection url', () {
     final params = ZemoteConnectionParams.parse(
-      'https://zcode.z.ai/remote/v4?sid=SID123&hash=HASH%3D&t=1785734607338'
-      '&mid=MID-1&name=DESKTOP&app_version=3.6.5',
+      'https://zcode.z.ai/remote/v4?sid=SID123&mid=MID-1&name=DESKTOP&app_version=3.6.5',
     );
     expect(params, isNotNull);
     expect(params!.deviceSid, 'SID123');
-    expect(params.passHash, 'HASH=');
-    expect(params.timestamp, 1785734607338);
     expect(params.deviceMid, 'MID-1');
     expect(params.deviceName, 'DESKTOP');
     expect(params.appVersion, '3.6.5');
-    expect(params.relayWsUri.toString(), 'wss://zcode.z.ai/ws?mid=MID-1');
+    expect(
+      params.relayWsUri(token: 'TOKEN').toString(),
+      'wss://zcode.z.ai/api/v1/remote/ws2?token=TOKEN&mid=MID-1',
+    );
   });
 
   test('reject invalid url', () {
-    expect(
-        ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4'), isNull);
     expect(ZemoteConnectionParams.parse('not a url'), isNull);
     expect(
       ZemoteConnectionParams.parse(
-          'http://zcode.z.ai/remote/v4?sid=s&hash=h&t=1'),
+          'http://zcode.z.ai/remote/v4?sid=s'),
       isNull,
     );
   });
 
-  test('proof is hmac-sha256 base64url', () {
-    final proof = calculateProof(
-      passHash: 'secret',
-      nonce: 'nonce',
-      role: 'terminal',
-      deviceSid: 'sid',
+  test('reject legacy v1 credential urls', () {
+    expect(
+      ZemoteConnectionParams.parse(
+          'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1'),
+      isNull,
     );
-    expect(proof, isNotEmpty);
-    expect(proof.contains('='), isFalse);
-    expect(proof.contains('+'), isFalse);
-    expect(proof.contains('/'), isFalse);
+    expect(
+      ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4?sid=s&t=1'),
+      isNull,
+    );
+    expect(
+      ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4?sid=s&hash=h'),
+      isNull,
+    );
   });
 
   test('crc32 known vector', () {

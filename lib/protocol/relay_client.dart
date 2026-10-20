@@ -6,7 +6,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'connection_params.dart';
 import 'device_info.dart';
-import 'proof.dart';
+import 'relay_http.dart';
 
 enum RelayState {
   idle,
@@ -29,7 +29,7 @@ class RelayFailure {
   String toString() => message == null ? reason : '$reason: $message';
 }
 
-/// Close-code mapping, mirrors `VC()` / `BC` in the web client.
+/// Close-code mapping (shared with V1; unchanged in V2).
 String? relayCloseReason(int code) {
   switch (code) {
     case 4004:
@@ -49,14 +49,23 @@ String? relayCloseReason(int code) {
   }
 }
 
-/// Reimplementation of the relay terminal socket (`pen` class in the web
-/// client). JSON text frames over `wss://<host>/ws`.
+/// Reimplementation of the Relay V2 terminal socket. JSON text frames over
+/// `wss://<host>/api/v1/remote/ws2?token=<one-time>&mid=<mid>`.
+///
+/// Auth model (V2): every connection needs a FRESH one-time token (60s
+/// TTL, atomically consumed at the WS upgrade) fetched via [getToken] —
+/// typically `RelayHttpClient.fetchToken(jwt, role: 'terminal')`. The
+/// handshake is a single `auth_init{device_sid, meta}` → `auth_ack`
+/// exchange; the V1 challenge/proof round-trip no longer exists.
 class RelayClient {
   final ZemoteConnectionParams params;
+  final String deviceSid;
+  final Future<String> Function() getToken;
   final void Function(String line)? onLog;
 
-  static const heartbeatInterval = Duration(seconds: 10);
-  static const heartbeatAckTimeout = Duration(seconds: 30);
+  /// V2 heartbeat: 5s interval, 15s ACK deadline.
+  static const heartbeatInterval = Duration(seconds: 5);
+  static const heartbeatAckTimeout = Duration(seconds: 15);
   static const waitingTimeout = Duration(seconds: 30);
   static const reconnectWaitTimeout = Duration(seconds: 20);
   static const _deadLinkThreshold = Duration(seconds: 25);
@@ -86,7 +95,8 @@ class RelayClient {
   DateTime _lastInboundAt = DateTime.now();
 
   /// Raw frame logging is expensive and can expose payload contents. Keep it
-  /// off by default; connection diagnostics remain logged separately.
+  /// off by default; connection diagnostics remain logged separately. The
+  /// WS URL carries a one-time token — never log query params unredacted.
   static bool verboseFrames = false;
   DateTime _lastPairStatusAckAt = DateTime.now();
 
@@ -95,7 +105,12 @@ class RelayClient {
   Timer? _reconnectTimer;
   Timer? _rewaitTimer;
 
-  RelayClient(this.params, {this.onLog});
+  RelayClient(
+    this.params, {
+    required this.deviceSid,
+    required this.getToken,
+    this.onLog,
+  });
 
   void _log(String line) => onLog?.call(line);
 
@@ -123,7 +138,32 @@ class RelayClient {
     _socket = null;
     _lastPairStatusAckAt = DateTime.now();
     _lastInboundAt = DateTime.now();
-    final uri = params.relayWsUri;
+
+    // One-time token: consumed atomically at the WS upgrade, 60s TTL. A
+    // stale (cached) token is rejected with 401 before the upgrade, so it
+    // must be fetched here, immediately before connecting.
+    final String token;
+    try {
+      token = await getToken();
+    } catch (e) {
+      _connectInFlight = false;
+      _log('[relay] token fetch failed: $e');
+      if (generation != _socketGeneration) return;
+      if (e is RelayHttpException && e.reason == 'auth-required') {
+        _setState(RelayState.error);
+        _failureController
+            .add(const RelayFailure('auth-required', '登录已失效，请重新登录'));
+        return;
+      }
+      _scheduleReconnect();
+      return;
+    }
+    if (_disposed || generation != _socketGeneration) {
+      _connectInFlight = false;
+      return;
+    }
+
+    final uri = params.relayWsUri(token: token);
     _log('[relay] connecting ${_safeUriForLog(uri)}');
     WebSocketChannel socket;
     try {
@@ -159,14 +199,14 @@ class RelayClient {
     _setState(RelayState.authenticating);
     _send({
       'type': 'auth_init',
-      'role': 'terminal',
-      'device_sid': params.deviceSid,
+      'device_sid': deviceSid,
       'meta': {
         'platform': zemotePlatformName(),
         'version': params.appVersion ?? 'web',
         'name': zemoteAppName,
       },
-      'client_ts': DateTime.now().millisecondsSinceEpoch,
+      // V2 timestamps are Unix SECONDS (milliseconds are rejected).
+      'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
     });
   }
 
@@ -203,7 +243,7 @@ class RelayClient {
     _send({
       'type': 'data',
       'payload': payload,
-      'client_ts': DateTime.now().millisecondsSinceEpoch,
+      'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
     });
   }
 
@@ -216,7 +256,7 @@ class RelayClient {
       _send({
         'type': 'data',
         'payload': payload,
-        'client_ts': DateTime.now().millisecondsSinceEpoch,
+        'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
       });
     }
   }
@@ -238,20 +278,14 @@ class RelayClient {
     }
     if (frame == null) return;
     switch (frame['type']) {
-      case 'auth_challenge':
-        _send({
-          'type': 'auth_response',
-          'device_sid': params.deviceSid,
-          'proof': calculateProof(
-            passHash: params.passHash,
-            nonce: frame['nonce'] as String? ?? '',
-            role: 'terminal',
-            deviceSid: params.deviceSid,
-          ),
-          'client_ts': DateTime.now().millisecondsSinceEpoch,
-        });
-        break;
       case 'auth_ack':
+        // auth_ack replaces the V1 challenge/ack pair: pairing status is
+        // delivered directly. Guard against ACKs for another sid.
+        final ackSid = frame['device_sid'] as String?;
+        if (ackSid == null || ackSid == deviceSid) {
+          _applyPairStatus(frame['pair_status'] as String?);
+        }
+        break;
       case 'pair_status_ack':
         _applyPairStatus(frame['pair_status'] as String?);
         break;
@@ -262,8 +296,7 @@ class RelayClient {
         }
         break;
       case 'error':
-        _handleRelayError(
-            frame['code'] as String?, frame['message'] as String?);
+        _handleRelayError(frame['code'] as String?, frame['message'] as String?);
         break;
     }
   }
@@ -289,6 +322,7 @@ class RelayClient {
       } else {
         _setState(RelayState.waiting);
         _startWaitingTimer();
+        _startHeartbeat();
       }
       return;
     }
@@ -306,23 +340,71 @@ class RelayClient {
 
   void _handleRelayError(String? code, String? message) {
     _log('[relay] error frame: $code $message');
-    if (code == 'KICKED') {
-      final detail = (message ?? '').toLowerCase();
-      final transient = detail.contains('conflict') ||
-          detail.contains('duplicate') ||
-          detail.contains('already connected') ||
-          detail.contains('another connection');
-      if (!_kickRecoveryAttempted &&
-          (state == RelayState.authenticating || transient)) {
-        _kickRecoveryAttempted = true;
-        _failureController.add(RelayFailure('session-conflict', message));
-        _reconnect();
-        return;
-      }
-      _setState(RelayState.kicked);
-      _intentionallyClosed = true;
-      _failureController.add(RelayFailure('kicked', message));
-      _socket?.sink.close();
+    switch (code) {
+      case 'KICKED':
+        final detail = (message ?? '').toLowerCase();
+        final transient = detail.contains('conflict') ||
+            detail.contains('duplicate') ||
+            detail.contains('already connected') ||
+            detail.contains('another connection');
+        if (!_kickRecoveryAttempted &&
+            (state == RelayState.authenticating || transient)) {
+          _kickRecoveryAttempted = true;
+          _failureController.add(RelayFailure('session-conflict', message));
+          _reconnect();
+          return;
+        }
+        _setState(RelayState.kicked);
+        _intentionallyClosed = true;
+        _failureController.add(RelayFailure('kicked', message));
+        _socket?.sink.close();
+        break;
+      case 'DEVICE_OFFLINE':
+        // Desktop dropped (remote control off / app quit / network). If we
+        // were paired it usually comes back — reconnect; a fresh connection
+        // that never paired reports the desktop as offline right away.
+        if (_wasPaired) {
+          _scheduleReconnect();
+        } else {
+          _setState(RelayState.error);
+          _failureController.add(
+              const RelayFailure('desktop-disconnected', '桌面端不在线'));
+        }
+        break;
+      case 'AUTH_FAILED':
+        // sid not registered under the logged-in account (wrong account or
+        // desktop re-registered) — retrying cannot fix it.
+        _intentionallyClosed = true;
+        _setState(RelayState.error);
+        _failureController.add(
+            RelayFailure('auth-failed', message ?? '设备不属于当前登录账号'));
+        _socket?.sink.close();
+        break;
+      case 'WRONG_PARAM':
+        _intentionallyClosed = true;
+        _setState(RelayState.error);
+        _failureController.add(
+            RelayFailure('invalid-mobile-connection', message ?? '连接参数无效'));
+        _socket?.sink.close();
+        break;
+      case 'INTERNAL':
+        if (state == RelayState.paired ||
+            (_wasPaired && state == RelayState.waiting)) {
+          // The hub forwards data for a missing device as INTERNAL without
+          // closing the terminal socket — degrade to waiting and keep
+          // probing instead of tearing everything down.
+          _clearWaitingTimer();
+          _setState(RelayState.waiting);
+          _startHeartbeat();
+        } else {
+          _scheduleReconnect();
+        }
+        break;
+      default:
+        _failureController
+            .add(RelayFailure('relay-unavailable', '$code $message'));
+        _scheduleReconnect();
+        break;
     }
   }
 
@@ -367,8 +449,7 @@ class RelayClient {
       }
       _send({
         'type': 'pair_status_query',
-        'device_sid': params.deviceSid,
-        'client_ts': DateTime.now().millisecondsSinceEpoch,
+        'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
       });
     });
   }
@@ -385,8 +466,7 @@ class RelayClient {
       }
       _send({
         'type': 'pair_status_query',
-        'device_sid': params.deviceSid,
-        'client_ts': DateTime.now().millisecondsSinceEpoch,
+        'client_ts': DateTime.now().millisecondsSinceEpoch ~/ 1000,
       });
     } else if (state != RelayState.idle &&
         state != RelayState.closed &&
@@ -406,7 +486,7 @@ class RelayClient {
       if (state == RelayState.waiting && !_wasPaired) {
         _setState(RelayState.error);
         _failureController.add(const RelayFailure(
-          'invalid-mobile-connection',
+          'desktop-disconnected',
           'Desktop did not match this mobile connection before the waiting timeout.',
         ));
       }

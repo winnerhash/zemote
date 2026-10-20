@@ -3,153 +3,108 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:zemote/protocol/connection_params.dart';
 
 void main() {
-  group('uriSchemeIsSecure', () {
-    test('https → secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('https://zcode.z.ai/remote'),
+  group('parse (Relay V2)', () {
+    test('full url with all routing hints', () {
+      final params = ZemoteConnectionParams.parse(
+        'https://zcode.z.ai/remote/v4?sid=SID&mid=MID&name=DEV&app_version=3.16.2&theme=dark',
       );
-      expect(params.uriSchemeIsSecure, isTrue);
+      expect(params, isNotNull);
+      expect(params!.deviceSid, 'SID');
+      expect(params.deviceMid, 'MID');
+      expect(params.deviceName, 'DEV');
+      expect(params.appVersion, '3.16.2');
+      expect(params.theme, 'dark');
     });
 
-    test('wss → secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('wss://zcode.z.ai/ws'),
-      );
-      expect(params.uriSchemeIsSecure, isTrue);
+    test('url without sid is valid (device-list entry)', () {
+      final params =
+          ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4');
+      expect(params, isNotNull);
+      expect(params!.deviceSid, isNull);
     });
 
-    test('http → not secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('http://zcode.z.ai/remote'),
-      );
-      expect(params.uriSchemeIsSecure, isFalse);
+    test('rejects v1 credential urls', () {
+      expect(
+          ZemoteConnectionParams.parse(
+              'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1785734607338'),
+          isNull);
+      expect(
+          ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4?hash=h'),
+          isNull);
+      expect(
+          ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4?t=123'),
+          isNull);
     });
 
-    test('ws → not secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('ws://zcode.z.ai/ws'),
-      );
-      expect(params.uriSchemeIsSecure, isFalse);
+    test('rejects insecure scheme', () {
+      expect(
+          ZemoteConnectionParams.parse('http://zcode.z.ai/remote/v4?sid=s'),
+          isNull);
+      expect(ZemoteConnectionParams.parse('ftp://x/remote'), isNull);
     });
 
-    test('ftp → not secure (was bug)', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('ftp://bad.example.com/remote'),
-      );
-      expect(params.uriSchemeIsSecure, isFalse);
+    test('rejects garbage', () {
+      expect(ZemoteConnectionParams.parse('not a url'), isNull);
+      expect(ZemoteConnectionParams.parse(''), isNull);
     });
 
-    test('unknown scheme → not secure', () {
-      final params = ZemoteConnectionParams(
-        deviceSid: 'sid',
-        passHash: 'hash',
-        timestamp: 1,
-        source: Uri.parse('file:///etc/passwd'),
-      );
-      expect(params.uriSchemeIsSecure, isFalse);
+    test('blank values are treated as absent', () {
+      final params = ZemoteConnectionParams.parse(
+          'https://zcode.z.ai/remote/v4?sid=%20&name=');
+      expect(params, isNotNull);
+      expect(params!.deviceSid, isNull);
+      expect(params.deviceName, isNull);
     });
   });
 
   group('relayWsUri', () {
-    test('https → wss', () {
+    test('builds ws2 url with token and mid', () {
       final params = ZemoteConnectionParams.parse(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&mid=m',
+          'https://zcode.z.ai/remote/v4?sid=s&mid=m');
+      expect(
+        params!.relayWsUri(token: 'TOKEN').toString(),
+        'wss://zcode.z.ai/api/v1/remote/ws2?token=TOKEN&mid=m',
       );
-      expect(params!.relayWsUri.toString(), 'wss://zcode.z.ai/ws?mid=m');
     });
 
-    test('http is rejected', () {
-      final params = ZemoteConnectionParams.parse(
-        'http://localhost:3000/remote/v4?sid=s&hash=h&t=1',
+    test('omits mid when absent', () {
+      final params =
+          ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4?sid=s');
+      expect(
+        params!.relayWsUri(token: 'T').toString(),
+        'wss://zcode.z.ai/api/v1/remote/ws2?token=T',
       );
-      expect(params, isNull);
     });
 
-    test('port is preserved', () {
+    test('keeps custom port', () {
       final params = ZemoteConnectionParams.parse(
-        'https://zcode.z.ai:8443/remote/v4?sid=s&hash=h&t=1',
+          'https://relay.example:8443/remote/v4?sid=s');
+      expect(
+        params!.relayWsUri(token: 'T').toString(),
+        'wss://relay.example:8443/api/v1/remote/ws2?token=T',
       );
-      expect(params!.relayWsUri.toString(), 'wss://zcode.z.ai:8443/ws');
     });
 
-    test('no mid → no query params', () {
-      final params = ZemoteConnectionParams.parse(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1',
-      );
-      expect(params!.relayWsUri.toString(), 'wss://zcode.z.ai/ws');
+    test('token survives url decoding', () {
+      final params =
+          ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4?sid=s');
+      final uri = params!.relayWsUri(token: 'a+b/c?d');
+      expect(uri.queryParameters['token'], 'a+b/c?d');
     });
   });
 
-  group('parse edge cases', () {
-    test('missing sid returns null', () {
+  group('uriSchemeIsSecure', () {
+    test('https/wss → secure', () {
       expect(
-        ZemoteConnectionParams.parse(
-            'https://zcode.z.ai/remote/v4?hash=h&t=1'),
-        isNull,
+        ZemoteConnectionParams(source: Uri.parse('https://zcode.z.ai/remote'))
+            .uriSchemeIsSecure,
+        isTrue,
       );
-    });
-
-    test('missing hash returns null', () {
       expect(
-        ZemoteConnectionParams.parse(
-            'https://zcode.z.ai/remote/v4?sid=s&t=1'),
-        isNull,
+        ZemoteConnectionParams(source: Uri.parse('wss://x/ws'))
+            .uriSchemeIsSecure,
+        isTrue,
       );
-    });
-
-    test('missing t returns null', () {
-      expect(
-        ZemoteConnectionParams.parse(
-            'https://zcode.z.ai/remote/v4?sid=s&hash=h'),
-        isNull,
-      );
-    });
-
-    test('invalid timestamp returns null', () {
-      expect(
-        ZemoteConnectionParams.parse(
-            'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=abc'),
-        isNull,
-      );
-    });
-
-    test('trimmed query values', () {
-      final params = ZemoteConnectionParams.parse(
-        'https://zcode.z.ai/remote/v4?sid= SID &hash= HASH &t=1',
-      );
-      expect(params, isNotNull);
-      expect(params!.deviceSid, 'SID');
-      expect(params.passHash, 'HASH');
-    });
-
-    test('empty optional fields are null', () {
-      final params = ZemoteConnectionParams.parse(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&mid=&name=',
-      );
-      expect(params!.deviceMid, isNull);
-      expect(params.deviceName, isNull);
-    });
-
-    test('theme is parsed', () {
-      final params = ZemoteConnectionParams.parse(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&theme=dark',
-      );
-      expect(params!.theme, 'dark');
     });
   });
 }

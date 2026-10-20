@@ -16,6 +16,11 @@ String _reqId(String prefix) => generateRequestId(prefix);
 /// relay connect -> pair -> bootstrap -> workspace bridge -> channel RPC.
 class ZemoteClient {
   final ZemoteConnectionParams params;
+
+  /// Fetches a fresh one-time WS token (Relay V2). Called before EVERY
+  /// relay connection attempt — tokens are consumed at the WS upgrade and
+  /// expire after 60 seconds, so they must never be cached.
+  final Future<String> Function() getToken;
   final void Function(String line)? onLog;
 
   late final RelayClient relay;
@@ -31,15 +36,25 @@ class ZemoteClient {
   Stream<dynamic> get workspaceListUpdated =>
       _workspaceListUpdatedController.stream;
 
-  ZemoteClient(this.params, {this.onLog}) {
-    relay = RelayClient(params, onLog: onLog);
+  ZemoteClient(this.params, {required this.getToken, this.onLog}) {
+    relay = RelayClient(
+      params,
+      deviceSid: params.deviceSid ?? '',
+      getToken: getToken,
+      onLog: onLog,
+    );
     _payloadSub = relay.payloads.listen(_dispatchPayload);
     relay.stateListenable.addListener(_onRelayState);
   }
 
   void _log(String line) => onLog?.call(line);
 
-  Future<void> connect() => relay.start();
+  Future<void> connect() {
+    if (params.deviceSid == null || params.deviceSid!.isEmpty) {
+      throw StateError('缺少 device_sid：请从设备列表选择或扫码获取设备');
+    }
+    return relay.start();
+  }
 
   bool _needsBridgeRecovery = false;
 

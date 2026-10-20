@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:zemote/protocol/connection_params.dart';
+import 'package:zemote/protocol/relay_http.dart';
 import 'package:zemote/protocol/id.dart';
 import 'package:zemote/state/account_store.dart';
 
@@ -52,39 +54,41 @@ void main() {
   });
 
   group('Account model', () {
-    test('fromUrl constructs account from valid URL', () {
-      final account = Account.fromUrl(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=Test',
-      );
+    test('fromParams constructs account from valid V2 URL', () {
+      final account = Account.fromParams(ZemoteConnectionParams.parse(
+        'https://zcode.z.ai/remote/v4?sid=s1&name=Test&mid=m1',
+      )!);
       expect(account.label, 'Test');
-      expect(account.params, isNotNull);
+      expect(account.deviceSid, 's1');
+      expect(account.deviceMid, 'm1');
+      expect(account.params.deviceSid, 's1');
     });
 
-    test('fromUrl uses host as label when no name set', () {
-      final account = Account.fromUrl(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1',
-      );
-      expect(account.label, 'zcode.z.ai');
-    });
-
-    test('fromUrl defaults label for rejected insecure URL', () {
-      final account = Account.fromUrl(
-        'http:///remote/v4?sid=s&hash=h&t=1',
-      );
+    test('fromParams defaults label when no name set', () {
+      final account = Account.fromParams(ZemoteConnectionParams.parse(
+        'https://zcode.z.ai/remote/v4?sid=s1',
+      )!);
       expect(account.label, '未命名设备');
-      expect(account.params, isNull);
     });
 
-    test('fromUrl returns Account with null params for invalid URL', () {
-      final account = Account.fromUrl('not-a-url');
-      expect(account.params, isNull);
+    test('fromDevice carries online state and meta', () {
+      final account = Account.fromDevice(const RelayDevice(
+        deviceSid: 'sid9',
+        deviceMid: 'mid9',
+        online: true,
+        createdAt: 1700000000,
+        name: '工位机',
+      ));
+      expect(account.label, '工位机');
+      expect(account.online, isTrue);
+      expect(account.deviceMid, 'mid9');
     });
 
     test('unique id per creation', () {
-      final a1 = Account.fromUrl(
-          'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=A');
-      final a2 = Account.fromUrl(
-          'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=B');
+      final a1 = Account.fromParams(ZemoteConnectionParams.parse(
+          'https://zcode.z.ai/remote/v4?sid=a&name=A')!);
+      final a2 = Account.fromParams(ZemoteConnectionParams.parse(
+          'https://zcode.z.ai/remote/v4?sid=b&name=B')!);
       expect(a1.id, isNot(equals(a2.id)));
     });
   });
@@ -100,29 +104,29 @@ void main() {
       expect(store.loaded, isFalse);
     });
 
-    test('addUrl returns Account', () async {
+    test('addParams returns Account', () async {
       final store = AccountStore();
-      final account = await store.addUrl(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=MyDevice',
-      );
+      final account = await store.addParams(
+          ZemoteConnectionParams.parse(
+              'https://zcode.z.ai/remote/v4?sid=s&name=MyDevice')!);
       expect(account.label, 'MyDevice');
       expect(store.accounts, hasLength(1));
     });
 
     test('rename updates label', () async {
       final store = AccountStore();
-      final account = await store.addUrl(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=Old',
-      );
+      final account = await store.addParams(
+          ZemoteConnectionParams.parse(
+              'https://zcode.z.ai/remote/v4?sid=s&name=Old')!);
       await store.rename(account.id, 'NewName');
       expect(store.accounts.first.label, 'NewName');
     });
 
     test('remove deletes account', () async {
       final store = AccountStore();
-      final account = await store.addUrl(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1&name=Device',
-      );
+      final account = await store.addParams(
+          ZemoteConnectionParams.parse(
+              'https://zcode.z.ai/remote/v4?sid=s&name=Device')!);
       expect(store.accounts, hasLength(1));
       await store.remove(account.id);
       expect(store.accounts, isEmpty);
@@ -130,9 +134,8 @@ void main() {
 
     test('touch updates lastUsedAt', () async {
       final store = AccountStore();
-      final account = await store.addUrl(
-        'https://zcode.z.ai/remote/v4?sid=s&hash=h&t=1',
-      );
+      final account = await store.addParams(
+          ZemoteConnectionParams.parse('https://zcode.z.ai/remote/v4?sid=s')!);
       final before = account.lastUsedAt;
       await Future<void>.delayed(const Duration(milliseconds: 10));
       await store.touch(account.id);

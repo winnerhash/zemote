@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-10-20
+
+### Changed
+- 适配 ZCode Relay V2 协议：账号登录（Z.AI / BigModel）、设备列表自动发现、一次性 token 鉴权连接。
+- 旧版 V1 凭据链接（sid+hash+t）已不被服务端支持，App 内改为登录后从账号设备列表选择设备（扫码仍可用）。
+
 ## [0.5.3-beta.5] - 2026-09-11
 
 ### Fixed

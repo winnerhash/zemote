@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zemote/protocol/connection_params.dart';
+import 'package:zemote/protocol/relay_http.dart';
 import 'package:zemote/protocol/zemote_client.dart';
 
 /// Read-only diagnostic probe: connect -> pair -> open bridge -> subscribe a
@@ -17,8 +18,17 @@ void main() {
       print('SKIP: ZEMOTE_PROBE_URL not set.');
       return;
     }
+    final jwt = const String.fromEnvironment('ZEMOTE_PROBE_JWT',
+        defaultValue: '');
+    if (jwt.isEmpty) {
+      // ignore: avoid_print
+      print('SKIP: ZEMOTE_PROBE_JWT not set (Relay V2 account JWT).');
+      return;
+    }
 
-    final client = ZemoteClient(params);
+    final relayHttp = RelayHttpClient();
+    final client = ZemoteClient(params,
+        getToken: () => relayHttp.fetchToken(jwt, role: 'terminal'));
     await client.connect();
     await client.waitPaired(timeout: const Duration(seconds: 60));
     // ignore: avoid_print

@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:zemote/protocol/channel_client.dart';
 import 'package:zemote/protocol/connection_params.dart';
+import 'package:zemote/protocol/relay_http.dart';
 import 'package:zemote/protocol/zemote_client.dart';
 import 'package:zemote/ui/task_home_page.dart';
 
@@ -13,11 +15,19 @@ void main() {
     if (!runReal) return;
     const encodedUrl = String.fromEnvironment('ZEMOTE_PROBE_URL_B64');
     if (encodedUrl.isEmpty) return;
+    final jwt = Platform.environment['ZEMOTE_PROBE_JWT'] ?? '';
+    if (jwt.isEmpty) {
+      // ignore: avoid_print
+      print('SKIP: ZEMOTE_PROBE_JWT not set (Relay V2 account JWT).');
+      return;
+    }
     final url = utf8.decode(base64.decode(encodedUrl));
     final params = ZemoteConnectionParams.parse(url);
     expect(params, isNotNull);
 
-    final client = ZemoteClient(params!);
+    final relayHttp = RelayHttpClient();
+    final client = ZemoteClient(params!,
+        getToken: () => relayHttp.fetchToken(jwt, role: 'terminal'));
     await client.connect();
     await client.waitPaired(timeout: const Duration(seconds: 60));
     final bootstrap = await client.bootstrap();
