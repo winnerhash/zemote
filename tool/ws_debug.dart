@@ -1,5 +1,6 @@
 // Standalone Relay V2 handshake debugger: dumps every raw frame.
 // Usage: dart run tool/ws_debug.dart <jwt> <sid> [mid]
+// ignore_for_file: avoid_print
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
