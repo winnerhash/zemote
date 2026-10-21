@@ -26,7 +26,7 @@
 
 # Zemote
 
-**手机/平板上的 ZCode 远程控制客户端** — 独立复刻官方 Web 远程控制协议（protocol reimplementation）
+**手机/平板上的 ZCode 远程控制客户端** — 继承自 [zemote](https://github.com/HumanAILoop/zemote)，适配 ZCode Relay V2 账号鉴权方式更新，独立复刻官方 Web 远程控制协议（protocol reimplementation）
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.5%2B-blue.svg?logo=flutter)](https://flutter.dev)
 [![CI](https://github.com/winnerhash/zemote/actions/workflows/build-apk.yml/badge.svg)](https://github.com/winnerhash/zemote/actions/workflows/build-apk.yml)
